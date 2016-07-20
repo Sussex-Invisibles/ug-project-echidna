@@ -138,20 +138,17 @@ def scalings_dict(liveYears=0.5):
     external['Po210_Av_Radon'] = 3.63e10
     external['Bi210_Av_Radon'] = 3.63e10
 
-    # Need to make special cases for time dependent backgrounds 
-    # Leaching - time (year) dependent
-    '''
-    Not sure about this... Maybe add back in later
-    Po210_li, Po210_AVi, Po210_AVe = 2.03e8, 1.56e10, 1.56e10
-    Bi210_li, Bi210_AVi, Bi210_AVe = 1.93e8, 1.52e10, 1.51e10
-    Pb210_li, Pb210_AVi, Pb210_AVe = 1.93e8, 1.52e10, 1.52e10
-    external['Po210'] = Po210_li + Po210_AVi + Po210_AVe
-    external['Bi210'] = Bi210_li + Bi210_AVi + Bi210_AVe
-    external['Pb210'] = Pb210_li + Pb210_AVi + Pb210_AVe
-    '''
     for key in external:
         external[key] = external[key]*liveYears
 
+    ################################
+    # Leaching stuff
+    ################################
+    Pb_av, Bi_av, Po_av, Pb_lab, Bi_lab, Po_lab = leaching_model(liveYears=liveYears)
+    internal["Pb210"] = internal["Pb210"] + Pb_lab
+    internal["Bi210"] = internal["Bi210"] + Bi_lab
+    internal["Po210"] = internal["Po210"] + Po_lab
+    print "%1.2e'\t%1.2e" % (Pb_av, Pb_lab)
     return internal, external, solar
 
 def find_background_paths(scalings_dict, data_path, phase='TeLoaded'):
@@ -175,6 +172,100 @@ def find_background_paths(scalings_dict, data_path, phase='TeLoaded'):
         elif not key in mc_paths:
             missing.append("%s%s" % (phase, key))
     return mc_paths, reco_paths, missing 
+
+def leaching_model(Pb210_av=985, Bi210_av=985.62, Po210_av=1013.2, liveYears=0.5):
+    '''Returns the number of counts at both the LAB and acrylic surface after some number of liveyears. The
+    values for the initial activity of Pb210/Bi210/Po210 came from Valentina [Bq]. The generic leaching model was 
+    written by Oleg. The basic formulars are:
+    
+    dPb_av = Pb210_av - Pb210_av_decayed - Pb210_leached
+    dBi_av = Bi210_av - Bi210_av_decayed - Bi210_leached + Pb210_av_decayed
+    dPo_av = Po210_av - Po210_av_decayed - Po210_leached + Bi210_av_decayed
+    
+    dPb_lab = Pb210_lab - Po210_lab_decayed + Pb210_leached
+    dBi_lab = Bi210_lab - Bi210_lab_decayed + Bi210_leached + Pb210_lab_decayed
+    dPo_lab = Po210_lab - Po210_lab_decayed + Po210_leached + Bi210_lab_decayed
+
+
+    Returns:
+        Pb210_lab [float]: The integrated number of counts leached into the lab in t=liveYears
+        Bi210_lab [float]: The integrated number of counts leached into the lab in t=liveYears
+        Po210_lab [float]: The integrated number of counts leached into the lab in t=liveYears
+        Pb210_av  [float]: The integrated number of counts at the av surface in t=liveYears
+        Bi210_av  [float]: The integrated number of counts at the av surface in t=liveYears
+        Po210_av  [float]: The integrated number of counts at the av surface in t=liveYears
+    '''
+    # Convert liveYears into other units:
+    days = int(np.ceil(liveYears*365.2))
+    hours = int(np.ceil(liveYears*365.2*24))
+    minutes = int(np.ceil(liveYears*365.2*24*60))
+
+    one_day = 60*60*24 # [s]
+    one_hour = 60*60   # [s]
+    one_minute = 60    # [s]
+
+    # Half lives
+    half_life_Pb = 22.3*365.2*24*60*60 # [s] 
+    half_life_Bi = 5.01*24*60*60       # [s] 
+    half_life_Po = 138.367*24*60*60    # [s] 
+
+    # Calculate decay rate (lambda) for different isotopes
+    rate_Pb = np.log(2)/half_life_Pb   # [1/s]
+    rate_Bi = np.log(2)/half_life_Bi   # [1/s]
+    rate_Po = np.log(2)/half_life_Po   # [1/s]
+    
+    # Leaching rate: 1.4e-4 +/- 1.74e-5 day^-1 @ 12degC 
+    # Leaching time: 7200 +/- 900 days 
+    LR = 1.4e-4 / (60*60*24) #s^-1 
+
+    # Convert activity to N_atoms
+    atoms_Pb = Pb210_av / rate_Pb
+    atoms_Bi = Bi210_av / rate_Bi
+    atoms_Po = Po210_av / rate_Po
+
+    ###############################################################
+    # Calculate how many atoms of each isotope after some time, dt
+    ###############################################################
+    Pb_av, Bi_av, Po_av = np.zeros(minutes+1), np.zeros(minutes+1), np.zeros(minutes+1)
+    Pb_lab, Bi_lab, Po_lab = np.zeros(minutes+1), np.zeros(minutes+1), np.zeros(minutes+1)
+    # Set initial values at the av surface - The LAB activity is initially zero
+    Pb_av[0], Bi_av[0], Po_av[0] = atoms_Pb, atoms_Bi, atoms_Po
+    # Loop over the number of minutes we want to run for
+    for i in range(minutes):
+        # Calculate how many atoms decayed
+        Pb210_av_decayed = Pb_av[i]*(1-np.exp(-rate_Pb*one_minute))
+        Bi210_av_decayed = Bi_av[i]*(1-np.exp(-rate_Bi*one_minute))
+        Po210_av_decayed = Po_av[i]*(1-np.exp(-rate_Po*one_minute))
+
+        Pb210_lab_decayed = Pb_lab[i]*(1-np.exp(-rate_Pb*one_minute))
+        Bi210_lab_decayed = Bi_lab[i]*(1-np.exp(-rate_Bi*one_minute))
+        Po210_lab_decayed = Po_lab[i]*(1-np.exp(-rate_Po*one_minute))
+        
+        # Calculate how many atoms leached
+        Pb210_leached = Pb_av[i]*(1-np.exp(-LR*one_minute))
+        Bi210_leached = Bi_av[i]*(1-np.exp(-LR*one_minute))
+        Po210_leached = Po_av[i]*(1-np.exp(-LR*one_minute))
+        
+        # Calculate how many atoms of each we'll have after some time, dt
+        Pb_av[i+1] = Pb_av[i] - Pb210_av_decayed - Pb210_leached
+        Bi_av[i+1] = Bi_av[i] - Bi210_av_decayed - Bi210_leached + Pb210_av_decayed
+        Po_av[i+1] = Po_av[i] - Po210_av_decayed - Po210_leached + Bi210_av_decayed
+        
+        Pb_lab[i+1] = Pb_lab[i] - Pb210_lab_decayed + Pb210_leached
+        Bi_lab[i+1] = Bi_lab[i] - Bi210_lab_decayed + Bi210_leached + Pb210_lab_decayed
+        Po_lab[i+1] = Po_lab[i] - Po210_lab_decayed + Po210_leached + Bi210_lab_decayed
+    
+    # Convert N_atoms to Activity and integrate under
+    # curve to give total counts.
+    Pb_av_counts = np.trapz(Pb_av*rate_Pb, dx=one_minute)
+    Bi_av_counts = np.trapz(Bi_av*rate_Bi, dx=one_minute)
+    Po_av_counts = np.trapz(Po_av*rate_Po, dx=one_minute)
+
+    Pb_lab_counts = np.trapz(Pb_lab*rate_Pb, dx=one_minute)
+    Bi_lab_counts = np.trapz(Bi_lab*rate_Bi, dx=one_minute)
+    Po_lab_counts = np.trapz(Po_lab*rate_Po, dx=one_minute)
+    
+    return Pb_av_counts, Bi_av_counts, Po_av_counts, Pb_lab_counts, Bi_lab_counts, Po_lab_counts
 
 
 def plot_signals(spectra_dict, scale_dict,  dimension='energy_reco'):
