@@ -1,0 +1,9 @@
+parameters:
+        energy_reco:
+                low: 0
+                high: 10
+                bins: 250
+        radial3_reco:
+                low: 0
+                high: 1
+                bins: 200

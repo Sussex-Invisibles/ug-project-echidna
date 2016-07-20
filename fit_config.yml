@@ -1,0 +1,14 @@
+global_fit_parameters:
+        energy_mc:
+                scale:
+                        prior: 1.
+                        sigma: 0.01
+                        low: 0.9
+                        high: 1.1
+                        bins: 10
+                shift:
+                        prior: 0.
+                        sigma: 0.01
+                        low: -0.1
+                        high: 0.1
+                        bins: 10
